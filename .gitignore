@@ -19,3 +19,6 @@ phHeight_*
 
 # keep README even if a global gitignore hides *.md
 !README.md
+
+# example inputs (a global gitignore may hide *.png)
+!examples/*.png
