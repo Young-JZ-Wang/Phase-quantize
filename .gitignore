@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# built launcher (rebuild with launchers/build_mac_app.sh)
+Phase Mask Quantizer.app/
+
+# generated designs
+out/
+*.stl
+*_report.json
+phHeight_*
+
+# your own input data (remove to commit an example)
+*.mat
+*.npy
+
+# keep README even if a global gitignore hides *.md
+!README.md
