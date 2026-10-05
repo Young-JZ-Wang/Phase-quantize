@@ -182,7 +182,7 @@ def test_original_mode_is_untouched():
     assert pq.resample_phase(phi, "original", 8) is phi
     a = pq.build_design(phi, wavelength_nm=532, step_nm=200)
     b = pq.build_design(phi, wavelength_nm=532, step_nm=200, resample="original", factor=4)
-    assert np.array_equal(a["q"], b["q"]) and b["pitch_scale"] == 1.0
+    assert np.array_equal(a["q"], b["q"])
 
 
 @pytest.mark.parametrize("mode,factor,shape", [("up", 1.5, (30, 45)), ("up", 2, (40, 60)),
@@ -222,16 +222,25 @@ def test_two_stage_export_and_footprint(tmp_path):
     assert c16.size == (256, 256) and np.asarray(c16).dtype == np.uint16
     disc = next(f for f in rep["files"] if f.endswith(".png") and "_continuous" not in f)
     assert Image.open(disc).size == (512, 512)                         # discrete grid is 2x finer
-    assert rep["footprint_um"] == [512.0, 512.0]                       # physical size unchanged
-    assert rep["pixel_pitch_um"] == pytest.approx(1.0) and rep["source_pixel_pitch_um"] == 2.0
+    assert rep["pixel_pitch_um"] == 2.0                                # pixel size is as entered
+    assert rep["footprint_um"] == [1024.0, 1024.0]                     # output 512 px x 2 um
     assert rep["resample"] == {"mode": "up", "factor": 2.0, "source_shape": [256, 256]}
     assert "_up2x" in Path(disc).name
 
 
-def test_down_sampling_stl_uses_new_pitch(tmp_path):
+def test_footprint_is_output_size_times_pixel_size(tmp_path):
+    for mode, factor, px in (("original", 1, 256), ("up", 1.5, 384), ("down", 4, 64)):
+        rep = pq.run(EXAMPLES / "lens_phase.png", 3.0, 532, "png", step_nm=200, resample=mode,
+                     factor=factor, output_dir=tmp_path, name_override=f"f_{mode}")
+        assert rep["footprint_um"] == [px * 3.0, px * 3.0]
+    d = pq.build_design(np.zeros((256, 256)), wavelength_nm=532, levels=4, resample="up", factor=2)
+    assert f"_{512 * 3}um_" in pq.output_path(d, "x.npy", 3.0).name   # name's size field uses it too
+
+
+def test_down_sampling_stl_uses_entered_pitch(tmp_path):
     rep = pq.run(EXAMPLES / "lens_phase.png", 1.0, 532, "stl", step_nm=200, resample="down",
                  factor=4, output_dir=tmp_path)
-    assert rep["pixel_pitch_um"] == pytest.approx(4.0) and rep["footprint_um"] == [256.0, 256.0]
+    assert rep["pixel_pitch_um"] == 1.0 and rep["footprint_um"] == [64.0, 64.0]    # 64 px x 1 um
 
 
 def test_continuous_export_can_be_skipped(tmp_path):

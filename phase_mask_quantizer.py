@@ -340,8 +340,8 @@ def resampled_shape(shape, mode, factor):
 
 def resample_phase(phi: np.ndarray, mode: str = "original", factor: float = 1.0) -> np.ndarray:
     """
-    Resample a continuous phase map onto a finer ('up') or coarser ('down') pixel grid, keeping the
-    physical footprint. The unit phasor exp(i*phi) is interpolated (bilinear, anti-aliased when
+    Resample a continuous phase map onto a finer ('up') or coarser ('down') pixel grid. The
+    pixel size is not changed, so the physical footprint becomes (output pixels) x (pixel size). The unit phasor exp(i*phi) is interpolated (bilinear, anti-aliased when
     shrinking) and its angle taken, so phase wraps are never averaged across. 'original' returns
     `phi` untouched.
     """
@@ -412,15 +412,12 @@ def build_design(phi, *, wavelength_nm, levels=6, material="fused_silica",
             "rms_err": float(np.sqrt(np.mean(err ** 2))),
             "phi_raw": phi_raw,                        # continuous input, before any sampling / quantization
             "resample": {"mode": resample, "factor": float(factor) if resample != "original" else 1.0,
-                         "source_shape": list(source_shape)},
-            "pitch_scale": max(source_shape) / max(phi.shape)}     # new pixel size = pitch * pitch_scale
+                         "source_shape": list(source_shape)}}
 
 
 def output_path(d, in_path, pixel_pitch_um, output_dir=None, name_override=None) -> Path:
     """Base path (no extension) of all files written for design `d`."""
     _, pitch = to_si(d["lam"] * 1e9, pixel_pitch_um)
-    if pitch is not None:
-        pitch *= d["pitch_scale"]                      # resampled grid -> new pixel size, same footprint
     out_dir = Path(output_dir) if output_dir else Path(in_path).parent
     name = name_override or design_name(Path(in_path).stem, d["step"] * (d["levels"] - 1),
                                         pitch, d["q"].shape, d["step"], d["lam"])
@@ -445,8 +442,6 @@ def export_design(d, out: Path, in_path, *, pixel_pitch_um, output="both",
     if output not in ("png", "stl", "both"):
         raise ValueError("output must be 'png', 'stl' or 'both'")
     _, pitch = to_si(d["lam"] * 1e9, pixel_pitch_um)
-    if pitch is not None:
-        pitch *= d["pitch_scale"]                      # pixel size of the (resampled) grid
     if output in ("stl", "both") and pitch is None:
         raise ValueError("pixel pitch is required for STL output")
 
@@ -461,10 +456,10 @@ def export_design(d, out: Path, in_path, *, pixel_pitch_um, output="both",
         "substrate": "custom" if n_substrate is not None else substrate, "n_substrate": d["n_substrate"],
         "depth_2pi_nm": d["depth_2pi"] * 1e9, "step_height_nm": step * 1e9,
         "max_height_nm": step * (levels - 1) * 1e9,
-        "pixel_pitch_um": pixel_pitch_um * d["pitch_scale"] if pixel_pitch_um else None,
-        "footprint_um": [d["resample"]["source_shape"][1] * pixel_pitch_um,
-                         d["resample"]["source_shape"][0] * pixel_pitch_um] if pixel_pitch_um else None,
-        "resample": d["resample"], "source_pixel_pitch_um": pixel_pitch_um,
+        "pixel_pitch_um": pixel_pitch_um,
+        # physical footprint = output image size (after resampling) x pixel size
+        "footprint_um": [q.shape[1] * pixel_pitch_um, q.shape[0] * pixel_pitch_um] if pixel_pitch_um else None,
+        "resample": d["resample"],
         "rms_quantization_error_rad": d["rms_err"],
         "ideal_efficiency_sinc2": d["efficiency"],
         "level_fill_fraction": (counts / counts.sum()).round(4).tolist(),
@@ -868,10 +863,10 @@ class App(tk.Tk if tk else object):
 
         counts = np.bincount(d["q"].ravel(), minlength=levels) / d["q"].size
         s = self.stat
-        s["footprint"].config(text=f"{fmt_length(nx * pitch)} × {fmt_length(ny * pitch)}" if pitch else "— (set pixel size)")
+        s["footprint"].config(text=f"{fmt_length(d['q'].shape[1] * pitch)} × {fmt_length(d['q'].shape[0] * pitch)}" if pitch else "— (set pixel size)")
         qy, qx = d["q"].shape
         s["pixels"].config(text=f"{qx} × {qy}" + ("" if (qx, qy) == (nx, ny) else f"  (from {nx} × {ny})"))
-        s["pitch"].config(text=f"{pitch * d['pitch_scale']:.4g} µm" if pitch else "—")
+        s["pitch"].config(text=f"{pitch:.4g} µm" if pitch else "—")
         s["step"].config(text=f"{d['step'] * 1e9:.2f} nm")
         s["maxh"].config(text=f"{d['step'] * (levels - 1) * 1e9:.1f} nm")
         s["n"].config(text=f"{d['n']:.4f}")
@@ -951,7 +946,7 @@ def cli(argv):
     ap.add_argument("--phase-unit", default="rad", choices=["rad", "waves", "deg"])
     ap.add_argument("--phase-scale", type=float, default=1.0, help="multiply the phase first (PhlatCam MATLAB uses 2)")
     ap.add_argument("--resample", default="original", choices=list(RESAMPLE_MODES),
-                    help="re-grid the phase before quantizing: up / down by --factor (footprint is kept)")
+                    help="re-grid the phase before quantizing: up / down by --factor (footprint = output pixels x pixel size)")
     ap.add_argument("--factor", type=float, default=2.0, help="resample factor per axis (e.g. 1.5, 2, 4, 8)")
     ap.add_argument("--no-continuous", dest="export_continuous", action="store_false",
                     help="skip the original continuous export (<name>_continuous.npy / .png)")

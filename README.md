@@ -47,8 +47,8 @@ python phase_mask_quantizer.py --help      # all options
    script does (`mod(2*phMm, 2*pi)`). The GUI defaults to PhlatCam's 200 nm step.
 4. **Resampling** (optional, before quantizing): `Original` (default, same pixel grid), `Up` or `Down` by a
    factor (presets 1.5, 2, 4, 8, or any number; `--resample up --factor 2`). The factor applies per
-   axis, so `Up 2×` gives 4× the pixels. The footprint is kept, so the pixel size becomes
-   `pitch / factor` (or `pitch × factor`). The unit phasor `exp(iφ)` is interpolated, so 2π wraps stay clean.
+   axis, so `Up 2×` gives 4× the pixels. The pixel size you enter is not changed, so the
+   physical footprint is the **output** image size × pixel size (it grows with `Up`, shrinks with `Down`). The unit phasor `exp(iφ)` is interpolated, so 2π wraps stay clean.
 5. Export, in two stages (below).
 
 Material presets: `air`, `fused_silica`, `su8`, `pdms`, `ip_dip`; or type any refractive index.
@@ -69,7 +69,7 @@ discrete design on the resampled grid (resampled names end in `_up2x` / `_down4x
 | `*_levels.npy`, `*_height_m.npy` | optional arrays |
 
 File name: `phHeight_<input>_<maxH>umMaxH_<pitch>um_<size>um_q<step>nm_lam<nm>`, where
-`size = max(Nx, Ny) × pixel size` (the physical footprint).
+`size = max(Nx, Ny) × pixel size` of the output image (the physical footprint).
 
 ## Try it
 
