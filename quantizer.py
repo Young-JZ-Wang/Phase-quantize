@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-phase_mask_quantizer.py
------------------
-Continuous phase profile (.mat / .npy / .png / .bmp)  ->  discrete height steps  ->  8-bit PNG and/or STL.
+quantizer.py
+------------
+The quantizer of NanoSlicer (tab 1): continuous phase profile (.mat / .npy / .png / .bmp)  ->  discrete height steps
+->  8-bit PNG and/or STL.
 
 Launch
-    python phase_mask_quantizer.py                                    # GUI (or double-click the launcher)
-    python phase_mask_quantizer.py INPUT PITCH_UM WAVELENGTH_NM [png|stl|both] [--step-nm DH | --levels N]
+    python nanoslicer.py                                                  # the app (this is its Quantizer tab)
+    python quantizer.py INPUT PITCH_UM WAVELENGTH_NM [png|stl|both] [--step-nm DH | --levels N]    # command line
 
 Pipeline
     1. Load the phase, optionally multiply it (PhlatCam MATLAB doubles it), wrap to [0, 2*pi)
@@ -43,6 +44,7 @@ except ImportError:
 
 TWO_PI = 2.0 * np.pi
 _UNIT = {"m": 1.0, "mm": 1e-3, "um": 1e-6, "nm": 1e-9}
+DEFAULT_STL_BASE_UM = 0.2            # base slab under the relief (um); same default as the Job tab
 
 
 # --------------------------------------------------------------------------
@@ -286,7 +288,7 @@ def heightfield_to_triangles(q: np.ndarray, step: float, pitch: float, base: flo
     return np.concatenate([t for t in tris if len(t)], 0).astype(np.float32)
 
 
-def write_binary_stl(path: Path, tris: np.ndarray, header: str = "phase_mask_quantizer") -> None:
+def write_binary_stl(path: Path, tris: np.ndarray, header: str = "NanoSlicer quantizer") -> None:
     e1, e2 = tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
     nrm = np.cross(e1, e2)
     nrm /= np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-30
@@ -385,7 +387,8 @@ def build_design(phi, *, wavelength_nm, levels=6, material="fused_silica",
     n_sub = n_substrate if n_substrate is not None else MATERIALS[substrate](lam)  # substrate (reported only)
     dn = n - n_medium
     if dn <= 0:
-        raise ValueError(f"n - n_medium must be > 0 (got {dn:.4f})")
+        raise ValueError(f"material n ({n:.4f}) must be greater than n medium ({n_medium:.4f}): "
+                         f"there is no index step, so no height (air in air?). Pick a higher-index material.")
 
     phi_raw = phi
     phi = phi * phase_scale                            # PhlatCam MATLAB uses 2 (mod(2*phMm, 2*pi))
@@ -430,7 +433,7 @@ def output_path(d, in_path, pixel_pitch_um, output_dir=None, name_override=None)
 def export_design(d, out: Path, in_path, *, pixel_pitch_um, output="both",
                   material="fused_silica", n_index=None, n_medium=1.0,
                   substrate="fused_silica", n_substrate=None, litho_masks=False,
-                  save_npy=False, stl_base_um=10.0, stl_units="um", stl_z_scale=1.0,
+                  save_npy=False, stl_base_um=DEFAULT_STL_BASE_UM, stl_units="um", stl_z_scale=1.0,
                   export_continuous=True) -> dict:
     """
     Write the files for design `d` and return the report dict. Two stages, in order:
@@ -442,6 +445,8 @@ def export_design(d, out: Path, in_path, *, pixel_pitch_um, output="both",
     if output not in ("png", "stl", "both"):
         raise ValueError("output must be 'png', 'stl' or 'both'")
     _, pitch = to_si(d["lam"] * 1e9, pixel_pitch_um)
+    if output in ("stl", "both") and not stl_base_um > 0:
+        raise ValueError("STL base must be > 0 um (with no base the lowest level has zero thickness)")
     if output in ("stl", "both") and pitch is None:
         raise ValueError("pixel pitch is required for STL output")
 
@@ -484,7 +489,7 @@ def export_design(d, out: Path, in_path, *, pixel_pitch_um, output="both",
             print(f"[warn] >{ntri / 1e6:.0f}M triangles (>{ntri * 50 / 1e9:.1f} GB); consider cropping/binning")
         tris = heightfield_to_triangles(q, step * stl_z_scale / s, pitch / s, stl_base_um * 1e-6 / s)
         p = out.with_name(out.name + ".stl")
-        write_binary_stl(p, tris, f"phase_mask_quantizer L={levels} lam={d['lam'] * 1e9:.1f}nm units={stl_units}")
+        write_binary_stl(p, tris, f"NanoSlicer quantizer L={levels} lam={d['lam'] * 1e9:.1f}nm units={stl_units}")
         report["files"].append(str(p))
         report["stl_triangles"] = int(len(tris))
         report["stl_units"] = stl_units
@@ -523,16 +528,71 @@ WAVELENGTHS = ["405", "450", "488", "532", "633", "780", "850", "1064", "1550"]
 LEVELS = ["2", "3", "4", "6", "8", "16", "32"]
 PITCHES = ["0.25", "0.5", "1", "2", "5", "10"]
 MEDIA = ["1.0", "1.33", "1.45"]
-BASES = ["0", "5", "10", "20", "50"]
+BASES = ["0.1", "0.2", "0.5", "1", "2", "5"]
 ZSCALES = ["1", "2", "5", "10"]
 FACTORS = ["1.5", "2", "4", "8"]
 MATERIAL_CHOICES = list(MATERIALS)           # names; a typed number is used as n directly
 PAD = 10
+STATUS_OK, STATUS_ERR = "#888", "#c0392b"
 
 
 def fmt_length(um: float) -> str:
     """Micrometres -> '1886 µm (1.886 mm)'."""
     return f"{um:.0f} µm ({um / 1000:.3f} mm)" if um >= 1000 else f"{um:.1f} µm"
+
+
+class ScrollFrame(ttk.Frame if ttk else object):
+    """A vertically scrollable area: put the widgets in `.body`. The scrollbar only shows when the content is taller
+    than the area; the mouse wheel / trackpad scrolls while the pointer is over it."""
+
+    def __init__(self, master):
+        super().__init__(master)
+        bg = ttk.Style().lookup("TFrame", "background") or self.winfo_toplevel().cget("bg")
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=bg)
+        self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+        self.body = ttk.Frame(self.canvas)
+        self.canvas.create_window(0, 0, window=self.body, anchor="nw")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body.bind("<Configure>", lambda e: self._sync())
+        self.canvas.bind("<Configure>", lambda e: self._sync())
+        self.bind("<Enter>", lambda e: self._wheel(True))
+        self.bind("<Leave>", lambda e: self._wheel(False))
+
+    def _overflows(self):
+        return self.body.winfo_reqheight() > self.canvas.winfo_height() > 1
+
+    def _sync(self):
+        self.canvas.configure(scrollregion=(0, 0, self.body.winfo_reqwidth(), self.body.winfo_reqheight()),
+                              width=self.body.winfo_reqwidth())
+        if self._overflows():
+            if not self.vsb.winfo_ismapped():
+                self.vsb.pack(side="right", fill="y")
+        else:
+            self.vsb.pack_forget()
+            self.canvas.yview_moveto(0)
+
+    def _wheel(self, on):
+        if on:
+            self.bind_all("<MouseWheel>", self._on_wheel)
+            self.bind_all("<Button-4>", self._on_wheel)
+            self.bind_all("<Button-5>", self._on_wheel)
+        else:
+            for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.unbind_all(ev)
+
+    def _on_wheel(self, e):
+        if not self._overflows():
+            return
+        num = getattr(e, "num", 0)                       # X11 reports wheel turns as buttons 4 / 5
+        step = -1 if num == 4 else 1 if num == 5 else (-1 if e.delta > 0 else 1) * max(1, abs(e.delta) // 120)
+        self.canvas.yview_scroll(step, "units")
+
+    def scroll_to_end(self):
+        """Bring the bottom of the content into view (e.g. after an Advanced section was opened)."""
+        self.update_idletasks()
+        self._sync()
+        self.canvas.yview_moveto(1.0)
 
 
 class Panel(ttk.Frame if ttk else object):
@@ -568,13 +628,18 @@ class Panel(ttk.Frame if ttk else object):
         self.canvas.create_image(cw // 2, ch // 2, image=self._photo)
 
 
-class App(tk.Tk if tk else object):
-    def __init__(self):
-        super().__init__()
-        self.title("Phase Mask Quantizer")
-        self.geometry("1180x720")
-        self.minsize(960, 600)
+class QuantizerFrame(ttk.Frame if ttk else object):
+    """The quantizer UI as a frame, so it can be a window of its own (App) or a tab of NanoSlicer."""
 
+    def __init__(self, master, on_send=None, on_export=None):
+        """on_send(payload dict): called by "Send to Job File Generator" (button only shown when given).
+        on_export(report, design_serial): called after every export."""
+        super().__init__(master)
+        self.on_send, self.on_export = on_send, on_export
+        self.last_report = None        # report of the last export
+        self.design_serial = 0         # counts the quantized results built so far; tells which design a file belongs to
+        self._export_serial = 0
+        self._report_serial = None
         self.raw = None                # loaded phase (radians for images / as stored otherwise)
         self.design = None             # last build_design() result
         self.after_id = None
@@ -582,8 +647,6 @@ class App(tk.Tk if tk else object):
         self.v = {}                    # tk variables by name
         self.rows = {}                 # name -> (label, widget), so rows can be hidden
         self._build_ui()
-        self.bind("<Command-e>", lambda e: self.export())
-        self.bind("<Control-e>", lambda e: self.export())
         self.status.set("Open a .mat, .npy, .png or .bmp phase file to begin.")
 
     # ---------------------------------------------------------------- widgets
@@ -607,6 +670,8 @@ class App(tk.Tk if tk else object):
         w = ttk.Combobox(parent, textvariable=self._var(name, default), values=values,
                          state="readonly" if readonly else "normal", width=14)
         w.grid(row=r, column=1, sticky="ew", pady=2)
+        for ev in ("<Return>", "<FocusOut>", "<<ComboboxSelected>>"):
+            w.bind(ev, lambda e: self._schedule(), add="+")        # typed or picked value -> refresh
         self.rows[name] = (lab, w)
         return w
 
@@ -618,6 +683,8 @@ class App(tk.Tk if tk else object):
         box.grid(row=r, column=1, sticky="ew", pady=2)
         e = ttk.Entry(box, textvariable=self._var(name, ""), width=14)
         e.pack(side="left", fill="x", expand=True)
+        for ev in ("<Return>", "<FocusOut>"):
+            e.bind(ev, lambda ev_: self._schedule(), add="+")
         if button:
             ttk.Button(box, text=button[0], width=8, command=button[1]).pack(side="left", padx=(4, 0))
         self.rows[name] = (lab, box)
@@ -644,18 +711,25 @@ class App(tk.Tk if tk else object):
         # Export pinned to the bottom of the sidebar
         bottom = ttk.Frame(side)
         bottom.pack(side="bottom", fill="x", pady=(PAD, 0))
+        ttk.Button(bottom, text="Update preview", command=self.refresh).pack(fill="x", ipady=4, pady=(0, 6))
+        if self.on_send:
+            ttk.Button(bottom, text="Send to Job File Generator  →", command=self.send_to_job).pack(fill="x", ipady=4, pady=(0, 6))
         ttk.Button(bottom, text="Export", default="active", command=self.export).pack(fill="x", ipady=6)
         ttk.Label(bottom, text="⌘E / Ctrl+E", foreground="#888").pack(anchor="e")
 
+        self.side_scroll = ScrollFrame(side)               # the settings scroll; the buttons above stay pinned
+        self.side_scroll.pack(side="top", fill="both", expand=True)
+        body = self.side_scroll.body
+
         # --- input
-        f = self._section(side, "Input")
+        f = self._section(body, "Input")
         self._entry_row(f, "File", "input", ("Browse…", self.browse_input))
         self.mat_key = self._field(f, "MAT variable", "mat_key", [""], "")
         self._field(f, "Phase unit", "phase_unit", ["rad", "waves", "deg"], "rad", readonly=True)
         self._check(f, "Invert (conjugate mask)", "invert")
 
         # --- design
-        f = self._section(side, "Design")
+        f = self._section(body, "Design")
         self._field(f, "Wavelength (nm)", "wavelength", WAVELENGTHS, "532")
         self._field(f, "Levels", "levels", LEVELS, "6")
         self._field(f, "Step height (nm)", "step_nm", ["", "100", "150", "200", "250", "300"], "200")
@@ -668,7 +742,7 @@ class App(tk.Tk if tk else object):
                   foreground="#888", wraplength=270).grid(row=f.grid_size()[1], column=0, columnspan=2, sticky="w")
 
         # --- resampling: one control = mode toggle + factor (preset or typed)
-        f = self._section(side, "Resampling")
+        f = self._section(body, "Resampling")
         r = f.grid_size()[1]
         ttk.Label(f, text="Mode").grid(row=r, column=0, sticky="w", pady=2)
         seg = ttk.Frame(f)
@@ -680,7 +754,7 @@ class App(tk.Tk if tk else object):
         self.factor_box.config(state="disabled")
 
         # --- output
-        f = self._section(side, "Output")
+        f = self._section(body, "Output")
         r = f.grid_size()[1]
         ttk.Label(f, text="Format").grid(row=r, column=0, sticky="w", pady=2)
         seg = ttk.Frame(f)
@@ -695,15 +769,15 @@ class App(tk.Tk if tk else object):
 
         # --- advanced (collapsible)
         self.adv_open = tk.BooleanVar(value=False)
-        self.adv_btn = ttk.Button(side, command=self._toggle_adv)
+        self.adv_btn = ttk.Button(body, command=self._toggle_adv)
         self.adv_btn.pack(fill="x", pady=(PAD + 2, 0))
-        self.adv = ttk.Frame(side)
+        self.adv = ttk.Frame(body)
         self.adv.columnconfigure(1, weight=1)
         self._field(self.adv, "Phase multiplier", "phase_scale", ["1", "2"], "1")
         self._field(self.adv, "n medium", "n_medium", MEDIA, "1.0")
         self._field(self.adv, "Step rounding", "rounding", ["floor", "round"], "floor", readonly=True)
         self._field(self.adv, "STL units", "stl_units", list(_UNIT), "um", readonly=True)
-        self._field(self.adv, "STL base (µm)", "stl_base", BASES, "10")
+        self._field(self.adv, "STL base (µm)", "stl_base", BASES, f"{DEFAULT_STL_BASE_UM:g}")
         self._field(self.adv, "STL z-scale", "stl_z", ZSCALES, "1")
         self._entry_row(self.adv, "Name", "name")
         self._check(self.adv, "Litho binary masks (PNG)", "litho")
@@ -736,13 +810,16 @@ class App(tk.Tk if tk else object):
         self.fill = ttk.Label(main, text="", foreground="#888")
         self.fill.pack(anchor="w", pady=(6, 0))
         self.status = tk.StringVar()
-        ttk.Label(main, textvariable=self.status, foreground="#888").pack(anchor="w", pady=(6, 0))
+        self.status_label = ttk.Label(main, textvariable=self.status, foreground=STATUS_OK, wraplength=760, justify="left")
+        self.status_label.pack(anchor="w", pady=(6, 0))
 
     def _toggle_adv(self, initial=False):
         if not initial:
             self.adv_open.set(not self.adv_open.get())
         if self.adv_open.get():
             self.adv.pack(fill="x", pady=(4, 0), after=self.adv_btn)
+            if not initial:
+                self.after_idle(self.side_scroll.scroll_to_end)      # show the options that just opened
         else:
             self.adv.pack_forget()
         self.adv_btn.config(text=("▾ " if self.adv_open.get() else "▸ ") + "Advanced (STL, medium, name)")
@@ -798,6 +875,7 @@ class App(tk.Tk if tk else object):
             self.raw = load_phase(path, key, "rad")
         except Exception as e:                           # bad file -> show, don't crash
             self.status.set(f"Load failed: {e}")
+            self.status_label.config(foreground=STATUS_ERR)
             for p in self.panels:
                 p.show(None)
             return
@@ -840,18 +918,40 @@ class App(tk.Tk if tk else object):
                     resample=self.v["resample"].get(),
                     factor=1.0 if self.v["resample"].get() == "original" else self._float("factor", "Resample factor"))
 
+    def refresh(self):
+        """The 'Update preview' button: re-read the input file, then rebuild everything from the settings."""
+        if Path(self.v["input"].get().strip()).is_file():
+            self._load_input(keep_key=True)              # also rebuilds the preview
+        else:
+            self.status.set("Choose an existing input file first.")
+            self.status_label.config(foreground=STATUS_ERR)
+
+    def _invalidate(self, message):
+        """Settings can't produce a design: drop the stale result so nothing old is shown or exported."""
+        self.design = None
+        self.panels[1].show(None, "no valid design")
+        for lab in self.stat.values():
+            lab.config(text="—")
+        self.fill.config(text="")
+        self.status.set(f"Cannot update: {message}")
+        self.status_label.config(foreground=STATUS_ERR)
+
     def update_preview(self):
+        if self.after_id:                                # a debounced call may still be pending: do not rebuild twice
+            self.after_cancel(self.after_id)
         self.after_id = None
         if self.raw is None:
             return
         try:
             phi = self.raw if self._is_image() else apply_unit(self.raw, self.v["phase_unit"].get())
             d = self.design = build_design(phi, **self._settings())
+            self.design_serial += 1
             pitch = self._float("pitch", "Pixel size", False)
         except ValueError as e:
-            self.status.set(f"Settings: {e}")
+            self._invalidate(e)
             return
 
+        self.status_label.config(foreground=STATUS_OK)
         levels = d["levels"]
         ny, nx = phi.shape
         wrapped = np.mod(phi * self._float("phase_scale", "Phase multiplier") * (-1 if self.v["invert"].get() else 1), TWO_PI)
@@ -901,6 +1001,7 @@ class App(tk.Tk if tk else object):
             return
 
         design, src = self.design, self.v["input"].get()
+        self._export_serial = self.design_serial
         self.status.set("Exporting…")
         done = queue.Queue()
 
@@ -925,7 +1026,30 @@ class App(tk.Tk if tk else object):
         threading.Thread(target=work, daemon=True).start()
         poll()
 
+    def send_to_job(self):
+        """Hand the current quantized result to the Job File Generator (through on_send)."""
+        if self.design is None:
+            messagebox.showwarning("Send", "Load a valid input file first.")
+            return
+        try:
+            pitch = self._float("pitch", "Pixel size")
+        except ValueError as e:
+            messagebox.showerror("Send", str(e))
+            return
+        d = self.design
+        files = (self.last_report or {}).get("files", []) if self._report_serial == self.design_serial else []
+        png = next((f for f in files if f.endswith(".png") and not f.endswith("_continuous.png") and "_mask" not in Path(f).name), None)
+        stl = next((f for f in files if f.endswith(".stl")), None)
+        self.on_send(dict(source_path=self.v["input"].get().strip(), heights_um=d["heights"] * 1e6, pixel_size_um=pitch,
+                          levels=int(d["q"].max()) + 1, step_um=d["step"] * 1e6, height_max_um=float(d["heights"].max()) * 1e6,
+                          png_path=png, stl_path=stl, design_id=self.design_serial))
+        self.status.set("Sent to the Job File Generator" + ("" if png or stl else " (not exported yet: the job will use the design in memory)"))
+
     def _export_done(self, rep):
+        self.last_report = rep
+        self._report_serial = self._export_serial
+        if self.on_export:
+            self.on_export(rep, self._export_serial)
         self.status.set(f"Wrote {len(rep['files'])} files to {Path(rep['files'][0]).parent}")
         messagebox.showinfo("Export", "Wrote:\n" + "\n".join(Path(f).name for f in rep["files"]))
 
@@ -958,7 +1082,7 @@ def cli(argv):
     ap.add_argument("--name", dest="name_override", help="replace the auto-generated name")
     ap.add_argument("--litho-masks", action="store_true", help="PNG: also write binary masks (levels = 2^m)")
     ap.add_argument("--save-npy", action="store_true", help="also save level and height arrays as .npy")
-    ap.add_argument("--stl-base-um", type=float, default=10.0, help="base slab thickness")
+    ap.add_argument("--stl-base-um", type=float, default=DEFAULT_STL_BASE_UM, help="base slab thickness (um, > 0)")
     ap.add_argument("--stl-units", default="um", choices=list(_UNIT))
     ap.add_argument("--stl-z-scale", type=float, default=1.0, help=">1 exaggerates heights (visualisation only)")
     a = vars(ap.parse_args(argv))
@@ -982,4 +1106,5 @@ if __name__ == "__main__":
     elif tk is None:
         sys.exit("[error] tkinter is not available; use the command line (see --help)")
     else:
-        App().mainloop()
+        from nanoslicer import NanoSlicerApp           # the GUI is the NanoSlicer app; this module is its first tab
+        NanoSlicerApp().mainloop()

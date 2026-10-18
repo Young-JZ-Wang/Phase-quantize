@@ -2,3 +2,13 @@ numpy>=1.23
 pillow>=9.1
 scipy>=1.9
 h5py>=3.7      # only needed for MATLAB v7.3 (.mat HDF5) files
+
+# Job File Generator (TipSlicer slicing); the Quantizer tab works without them
+opencv-python-headless>=4.8
+tables>=3.8
+matplotlib>=3.5
+scikit-image>=0.19     # height-gradient-guided segmentation
+numpy-stl>=3.0      # only for an STL input to the Job File Generator
+
+# optional: exact writing order (phase-quality-guided mode). Not on PyPI as "pyconcorde" at the time of writing; build it
+# from https://github.com/jvkersch/pyconcorde (needs a C compiler). Without it the 2-opt route is used.

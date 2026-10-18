@@ -5,10 +5,13 @@ __pycache__/
 venv/
 
 # built launcher (rebuild with launchers/build_mac_app.sh)
-Phase Mask Quantizer.app/
+*.app/
 
-# generated designs
+# generated designs and job files
 out/
+*_job.gwl
+*_data.gwl
+*_files/
 *.stl
 *_report.json
 phHeight_*
@@ -22,3 +25,12 @@ phHeight_*
 
 # example inputs (a global gitignore may hide *.png)
 !examples/*.png
+
+examples/demo_out/
+
+# TSP solver scratch files (concorde)
+*.res
+*.sol
+
+# third-party attribution (a global gitignore may hide *.md)
+!third_party/tipslicer/NOTICE.md

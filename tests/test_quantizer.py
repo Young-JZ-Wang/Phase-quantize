@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import phase_mask_quantizer as pq
+import quantizer as pq
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 TWO_PI = 2 * np.pi
@@ -254,3 +254,27 @@ def test_cli_resample_flags(tmp_path, capsys):
             "--factor", "2", "--output-dir", str(tmp_path)])
     assert any(p.name.endswith("_down2x.png") for p in tmp_path.iterdir())
     assert any(p.name.endswith("_continuous.npy") for p in tmp_path.iterdir())
+
+
+def _stl_z_range(path):
+    n = int.from_bytes(Path(path).read_bytes()[80:84], "little")
+    rec = np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+    v = np.frombuffer(Path(path).read_bytes()[84:], dtype=rec, count=n)["v"]
+    return float(v[..., 2].min()), float(v[..., 2].max())
+
+
+def test_stl_base_default_is_thin(tmp_path):
+    """The old 10 um default buried a ~1 um relief under a 10 um slab; the default is now 0.2 um."""
+    rep = pq.run(EXAMPLES / "lens_phase.png", 1.0, 532, "stl", step_nm=200, output_dir=tmp_path)
+    zmin, zmax = _stl_z_range(next(f for f in rep["files"] if f.endswith(".stl")))
+    assert zmin == pytest.approx(-0.2, abs=1e-5)                 # slab under the relief, micrometres
+    assert zmax == pytest.approx(1.0, abs=1e-5)                  # max relief
+    assert -zmin < 0.25 * zmax
+
+
+def test_stl_base_is_adjustable_and_must_be_positive(tmp_path):
+    rep = pq.run(EXAMPLES / "lens_phase.png", 1.0, 532, "stl", step_nm=200, stl_base_um=0.5, output_dir=tmp_path)
+    assert _stl_z_range(next(f for f in rep["files"] if f.endswith(".stl")))[0] == pytest.approx(-0.5, abs=1e-5)
+    with pytest.raises(ValueError):
+        pq.run(EXAMPLES / "lens_phase.png", 1.0, 532, "stl", step_nm=200, stl_base_um=0, output_dir=tmp_path)
+    assert pq.run(EXAMPLES / "lens_phase.png", 1.0, 532, "png", step_nm=200, stl_base_um=0, output_dir=tmp_path)  # png only: unused
